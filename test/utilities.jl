@@ -1,7 +1,8 @@
 module UtilitiesTests
 using Test
 using Logging: Info
-include("TestUtilities.jl"); using Main.TestUtilities
+include("TestUtilities.jl")
+using Main.TestUtilities
 
 import Documenter
 using Documenter: git
@@ -98,6 +99,27 @@ end
     @test Documenter.doccat(UnitTests.TA) == "Type"
     @test Documenter.doccat(UnitTests.TB) == "Type"
     @test Documenter.doccat(UnitTests.TC) == "Type"
+
+    let b = Base.Docs.Binding(Base, Symbol(":")), obj = Documenter.Object(b, Union{})
+        @test Documenter.bindingstring(b) == "Base.:(:)"
+        @test string(obj) == "Base.:(:)"
+        @test Documenter.slugify(obj) == "Base.:(:)"
+    end
+    let b = Base.Docs.Binding(Base, Symbol("==")), obj = Documenter.Object(b, Union{})
+        @test Documenter.bindingstring(b) == "Base.:(==)"
+        @test string(obj) == "Base.:(==)"
+        @test Documenter.slugify(obj) == "Base.:(==)"
+    end
+    let b = Base.Docs.Binding(Base, Symbol("+")), obj = Documenter.Object(b, Union{})
+        @test Documenter.bindingstring(b) == "Base.:+"
+        @test string(obj) == "Base.:+"
+        @test Documenter.slugify(obj) == "Base.:+"
+    end
+    let b = Base.Docs.Binding(Base, :sin), obj = Documenter.Object(b, Union{})
+        @test Documenter.bindingstring(b) == "Base.sin"
+        @test string(obj) == "Base.sin"
+        @test Documenter.slugify(obj) == "Base.sin"
+    end
 
     # repo type
     @test Documenter.repo_host_from_url("https://bitbucket.org/somerepo") == Documenter.RepoBitbucket
@@ -443,12 +465,12 @@ end
         ]
         @test mdparse("x\n\ny", mode = :blocks) == [
             MarkdownAST.@ast(
-                MarkdownAST.Paragraph() do;
+                MarkdownAST.Paragraph() do
                     "x"
                 end
             ),
             MarkdownAST.@ast(
-                MarkdownAST.Paragraph() do;
+                MarkdownAST.Paragraph() do
                     "y"
                 end
             ),
@@ -744,6 +766,19 @@ end
             ]
             @test Documenter.slugify(test) == answer
         end
+    end
+
+    @testset "GitHub constructors" begin
+        gh = Documenter.Remotes.GitHub("user/project")
+        @test gh.user == "user"
+        @test gh.repo == "project"
+        @test gh.host == "github.com"
+
+
+        gh = Documenter.Remotes.GitHub("selfhosted.com/user/project")
+        @test gh.user == "user"
+        @test gh.repo == "project"
+        @test gh.host == "selfhosted.com"
     end
 end
 

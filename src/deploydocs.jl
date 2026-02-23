@@ -110,7 +110,7 @@ Defaults to `"dev"`.
 **`forcepush`** a boolean that specifies the behavior of the git-deployment.
 The default (`forcepush = false`) is to push a new commit, but when
 `forcepush = true` the changes will be combined with the previous commit and
-force pushed, erasing the Git history on the deployment branch.
+force pushed (with lease), erasing the Git history on the deployment branch.
 
 **`versions`** determines content and order of the resulting version selector in
 the generated html. The following entries are valid in the `versions` vector:
@@ -194,28 +194,18 @@ GitHub.
 function deploydocs(;
         root = currentdir(),
         target = "build",
-        dirname = "",
-
-        repo = error("no 'repo' keyword provided."),
+        dirname = "", repo = error("no 'repo' keyword provided."),
         branch = "gh-pages",
-        deploy_repo = nothing,
-
-        repo_previews = nothing,
-        branch_previews = branch,
-
-        deps = nothing,
-        make = nothing,
-
-        cname = nothing,
+        deploy_repo = nothing, repo_previews = nothing,
+        branch_previews = branch, deps = nothing,
+        make = nothing, cname = nothing,
         devbranch = nothing,
         devurl = "dev",
         versions = ["stable" => "v^", "v#.#", devurl => devurl],
         forcepush::Bool = false,
         deploy_config = auto_detect_deploy_system(),
         push_preview::Bool = false,
-        tag_prefix = "",
-
-        archive = nothing, # experimental and undocumented
+        tag_prefix = "", archive = nothing, # experimental and undocumented
     )
 
     # Try to figure out default branch (see #1443 and #1727)
@@ -379,7 +369,7 @@ function git_push(
     # Generate a closure with common commands for ssh and https
     function git_commands(sshconfig = nothing)
         # Setup git.
-        run(`$(git()) init`)
+        run(`$(git()) init --initial-branch=main`) # specify initial branch just to turn off the advice in the deploy logs
         run(`$(git()) config user.name "Documenter.jl"`)
         run(`$(git()) config user.email "documenter@juliadocs.github.io"`)
         run(`$(git()) config commit.gpgsign false`)
@@ -436,7 +426,7 @@ function git_push(
                 run(`$(git()) archive -o $(archive) HEAD`)
             elseif forcepush
                 run(`$(git()) commit --amend --date=now -m "build based on $sha"`)
-                run(`$(git()) push -fq upstream HEAD:$branch`)
+                run(`$(git()) push -q --force-with-lease upstream HEAD:$branch`)
             else
                 run(`$(git()) commit -m "build based on $sha"`)
                 run(`$(git()) push -q upstream HEAD:$branch`)
@@ -493,10 +483,10 @@ function git_push(
                     cd(() -> git_commands(sshconfig), temp)
                 end
             end
-            post_status(deploy_config; repo = repo, type = "success", subfolder = subfolder)
+            post_status(deploy_config; type = "success", subfolder = subfolder)
         catch e
             @error "Failed to push:" exception = (e, catch_backtrace())
-            post_status(deploy_config; repo = repo, type = "error")
+            post_status(deploy_config; type = "error")
             rethrow(e)
         finally
             # Remove the unencrypted private key.
@@ -507,10 +497,10 @@ function git_push(
         upstream = authenticated_repo_url(deploy_config)
         try
             cd(() -> withenv(git_commands, NO_KEY_ENV...), temp)
-            post_status(deploy_config; repo = repo, type = "success", subfolder = subfolder)
+            post_status(deploy_config; type = "success", subfolder = subfolder)
         catch e
             @error "Failed to push:" exception = (e, catch_backtrace())
-            post_status(deploy_config; repo = repo, type = "error")
+            post_status(deploy_config; type = "error")
             rethrow(e)
         end
     end

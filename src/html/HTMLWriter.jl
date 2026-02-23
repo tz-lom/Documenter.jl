@@ -73,7 +73,7 @@ using SHA: SHA
 using CodecZlib: ZlibCompressorStream
 using ANSIColoredPrinters: ANSIColoredPrinters
 
-using ..Documenter: Documenter, Default, Remotes
+using ..Documenter: Documenter, Default, Remotes, locrepr
 using ...JSDependencies: JSDependencies
 using ...DOM: DOM, @tags
 using ...MDFlatten: mdflatten
@@ -707,6 +707,13 @@ struct DCtx
         droplinks = dctx.droplinks,
         footnotes = dctx.footnotes,
     ) = new(dctx.ctx, navnode, droplinks, footnotes)
+end
+
+function Documenter.locrepr(dctx::DCtx, lines = nothing)
+    doc = dctx.ctx.doc
+    src = dctx.navnode.page
+    page = doc.blueprint.pages[src]
+    return Documenter.locrepr(doc, page, lines)
 end
 
 function SearchRecord(ctx::HTMLContext, navnode; fragment = "", title = nothing, category = "page", text = "")
@@ -1880,7 +1887,7 @@ function domify(dctx::DCtx, ::Node, indexnode::Documenter.IndexNode)
         path = joinpath(navnode_dir, path) # links in IndexNodes are relative to current page
         path = pretty_url(ctx, relhref(navnode_url, get_url(ctx, path)))
         url = string(path, "#", Documenter.slugify(object))
-        li(a[:href => url](code("$(object.binding)")))
+        li(a[:href => url](code(Documenter.bindingstring(object.binding))))
     end
     return ul(lis)
 end
@@ -1895,7 +1902,7 @@ function domify(dctx::DCtx, mdast_node::Node, docsnode::Documenter.DocsNode)
     rec = SearchRecord(
         ctx, navnode;
         fragment = Documenter.anchor_fragment(docsnode.anchor),
-        title = string(docsnode.object.binding),
+        title = Documenter.bindingstring(docsnode.object.binding),
         category = Documenter.doccat(docsnode.object),
         text = mdflatten(mdast_node)
     )
@@ -1906,7 +1913,7 @@ function domify(dctx::DCtx, mdast_node::Node, docsnode::Documenter.DocsNode)
             summary[
                 :id => docsnode.anchor.id,
             ](
-                a[".docstring-binding", :href => "#$(docsnode.anchor.id)"](code("$(docsnode.object.binding)")),
+                a[".docstring-binding", :href => "#$(docsnode.anchor.id)"](code(Documenter.bindingstring(docsnode.object.binding))),
                 " — ", # &mdash;
                 span[".docstring-category"]("$(Documenter.doccat(docsnode.object))")
             ),
@@ -1930,7 +1937,7 @@ function domify_doc(dctx::DCtx, node::Node)
     # each markdown object. The `DocStr` contains data such as file and line info that
     # we need for generating correct source links.
     return map(zip(node.element.mdasts, node.element.results)) do (markdown, result)
-        ret = div(domify(dctx, markdown))
+        ret = section(div(domify(dctx, markdown)))
         # When a source link is available then print the link.
         if !ctx.settings.disable_git
             url = Documenter.source_url(ctx.doc, result)
@@ -2292,6 +2299,10 @@ domify(dctx::DCtx, node::Node, ::MarkdownAST.BlockQuote) = DOM.Tag(:blockquote)(
 
 domify(dctx::DCtx, node::Node, ::MarkdownAST.Strong) = DOM.Tag(:strong)(domify(dctx, node.children))
 
+domify(dctx::DCtx, node::Node, ::MarkdownAST.Emph) = DOM.Tag(:em)(domify(dctx, node.children))
+
+domify(dctx::DCtx, node::Node, ::MarkdownAST.Strikethrough) = DOM.Tag(:del)(domify(dctx, node.children))
+
 function domify(dctx::DCtx, ::Node, c::MarkdownAST.CodeBlock)
     ctx = dctx.ctx
     settings = ctx.settings
@@ -2374,11 +2385,13 @@ function domify(dctx::DCtx, node::Node, i::ImageElements)
     end
 end
 
-domify(dctx::DCtx, node::Node, ::MarkdownAST.Emph) = DOM.Tag(:em)(domify(dctx, node.children))
-
 domify(::DCtx, ::Node, m::MarkdownAST.DisplayMath) = DOM.Tag(:p)[".math-container"](string("\\[", m.math, "\\]"))
 
 domify(::DCtx, ::Node, m::MarkdownAST.InlineMath) = DOM.Tag(:span)(string('$', m.math, '$'))
+
+domify(::DCtx, ::Node, html::MarkdownAST.HTMLBlock) = DOM.Tag(Symbol("#RAW#"))(html.html)
+
+domify(::DCtx, ::Node, html::MarkdownAST.HTMLInline) = DOM.Tag(Symbol("#RAW#"))(html.html)
 
 domify(::DCtx, ::Node, m::MarkdownAST.LineBreak) = DOM.Tag(:br)()
 # TODO: Implement SoftBreak, Backslash (but they don't appear in standard library Markdown conversions)
@@ -2437,17 +2450,17 @@ function domify(dctx::DCtx, node::Node, t::MarkdownAST.Table)
 end
 
 function domify(dctx::DCtx, ::Node, e::MarkdownAST.JuliaValue)
-    message = """
-        Unexpected Julia interpolation in the Markdown. This probably means that you have an
-        unbalanced or un-escaped \$ in the text.
-
-        To write the dollar sign, escape it with `\\\$`
-
-        We don't have the file or line number available, but we got given the value:
-
-        `$(e.ref)` which is of type `$(typeof(e.ref))`
+    message =
     """
+    Unexpected Julia interpolation in the Markdown. This probably means that you have an
+    unbalanced or un-escaped \$ in the text.
 
+    To write the dollar sign, escape it with `\\\$`
+
+    This is in file $(locrepr(dctx)), and we were given the value:
+
+    `$(e.ref)` which is of type `$(typeof(e.ref))`
+    """
     if dctx.ctx.doc.user.treat_markdown_warnings_as_error
         error(message)
     else
@@ -2477,7 +2490,7 @@ function domify(dctx::DCtx, node::Node, f::MarkdownAST.FootnoteDefinition)
     # TODO: this could be rearranged such that we push!() the DOM here into .footnotes, rather
     # than the Node objects.
     if isnothing(dctx.footnotes)
-        @error "Invalid nested footnote definition in $(Documenter.locrepr(dctx.navnode.page))" f.id
+        @error "Invalid nested footnote definition in $(Documenter.locrepr(dctx))" f.id
     else
         push!(dctx.footnotes, node)
     end
@@ -2514,7 +2527,7 @@ function domify(dctx::DCtx, node::Node, a::MarkdownAST.Admonition)
             # apply a class
             isempty(cat_sanitized) ? "" : ".is-category-$(cat_sanitized)"
         end
-    node_repr = sprint(io -> show(io, node))
+    node_repr = strip(mdflatten(node))
     content_hash = string(hash(node_repr), base = 16)
     admonition_id = if !isempty(a.title)
         base_id = Documenter.slugify(a.title)

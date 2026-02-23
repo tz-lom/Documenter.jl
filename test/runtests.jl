@@ -29,6 +29,10 @@ end
     @info "Building docsxref/make.jl"
     include("docsxref/make.jl")
 
+    # Warnings
+    @info "Building warnings/make.jl"
+    include("warnings/make.jl")
+
     # Error reporting.
     @info "Building errors/make.jl"
     @quietly include("errors/make.jl")
@@ -63,6 +67,7 @@ end
     include("doctests/doctestapi.jl")
     include("doctests/doctests.jl")
     include("doctests/fix/tests.jl")
+    include("doctests/syntax_versioning.jl")
 
     # DOM Tests.
     include("dom.jl")

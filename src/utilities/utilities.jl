@@ -72,12 +72,17 @@ function find_block_in_file(code, file)
 end
 
 # Pretty-printing locations
-function locrepr(file, line = nothing)
+function locrepr(file::String, lines::Union{Nothing, Pair{Int, Int}} = nothing)
     basedir = isassigned(original_pwd) ? original_pwd[] : currentdir()
     file = abspath(file)
     str = Base.contractuser(relpath(file, basedir))
-    line !== nothing && (str = str * ":$(line.first)-$(line.second)")
+    lines !== nothing && (str = str * ":$(lines.first)-$(lines.second)")
     return str
+end
+
+function locrepr(doc, page, lines::Union{Nothing, Pair{Int, Int}} = nothing)
+    file = joinpath(doc.user.root, page.source)
+    return locrepr(file, lines)
 end
 
 # Directory paths.
@@ -117,6 +122,23 @@ function slugify(s::AbstractString)
 end
 slugify(object) = string(object) # Non-string slugifying doesn't do anything.
 
+# Render doc bindings with syntax that can be copy-pasted as valid Julia code.
+# Workaround for <https://github.com/JuliaDocs/Documenter.jl/issues/2844>: in
+# the Julia documentation, `Base.:(:)` was being displayed as `Base.::`. This
+# has been fixed in <https://github.com/JuliaLang/julia/pull/61043> but until
+# this fix is available in Julia versions, we replace calls to `string` on
+# bindings by `Documenter.bindingstring`. In the future, we may be able to
+# get rid of this again.
+function bindingstring(binding::Binding)
+    if VERSION < v"1.14.0-DEV.1731"
+        s = string(binding)
+        op_prefix = string(binding.mod, ".:")
+        return startswith(s, op_prefix) ? string(binding.mod, ".", sprint(show, binding.var)) : s
+    else
+        return string(binding)
+    end
+end
+
 # Parse code blocks.
 
 """
@@ -134,10 +156,17 @@ returns this expression normally and it must be handled appropriately by the cal
 
 The `linenumbernode` can be passed as a `LineNumberNode` to give information about filename
 and starting line number of the block (requires Julia 1.6 or higher).
+
+The `syntax_version` can be passed as a `VersionNumber` to parse the code using a specific
+Julia syntax version. This requires Julia 1.14 or higher.
+
+The `mod` can be passed as a `Module` to use that module's parser (via `Meta.parser_for_module`).
+If not specified, the default parser is used. When both `syntax_version` and `mod` are specified,
+`syntax_version` takes precedence.
 """
 function parseblock(
         code::AbstractString, doc, file; skip = 0, keywords = true, raise = true,
-        linenumbernode = nothing
+        linenumbernode = nothing, lines = nothing, syntax_version = nothing, mod = nothing
     )
     # Drop `skip` leading lines from the code block. Needed for deprecated `{docs}` syntax.
     code = string(code, '\n')
@@ -145,20 +174,33 @@ function parseblock(
     endofstr = lastindex(code)
     results = []
     cursor = 1
+    # Determine which parser to use:
+    # 1. If syntax_version is specified and VersionedParse exists, use versioned parser
+    # 2. Otherwise, use the module's parser via parser_for_module (defaults to Core._parse)
+    _parse = if syntax_version !== nothing && isdefined(Base, :VersionedParse)
+        Base.VersionedParse(syntax_version)
+    elseif isdefined(Meta, :parser_for_module)
+        Meta.parser_for_module(mod)
+    else
+        nothing
+    end
     while cursor < endofstr
         # Check for keywords first since they will throw parse errors if we `parse` them.
         line = match(r"^(.*)\r?\n"m, SubString(code, cursor)).match
         keyword = Symbol(strip(line))
         (ex, ncursor) =
-        # TODO: On 0.7 Symbol("") is in Docs.keywords, remove that check when dropping 0.6
-        if keywords && (haskey(Docs.keywords, keyword) || keyword == Symbol(""))
+        if keywords && haskey(Docs.keywords, keyword)
             (QuoteNode(keyword), cursor + lastindex(line))
         else
             try
-                Meta.parse(code, cursor; raise = raise)
+                if _parse !== nothing
+                    Meta.parse(code, cursor; raise = raise, _parse = _parse)
+                else
+                    Meta.parse(code, cursor; raise = raise)
+                end
             catch err
-                @docerror(doc, :parse_error, "failed to parse exception in $(locrepr(file))", exception = err)
-                break
+                @docerror(doc, :parse_error, "failed to parse code block in $(locrepr(file, lines))", exception = err)
+                return []
             end
         end
         str = SubString(code, cursor, prevind(code, ncursor))
@@ -168,7 +210,12 @@ function parseblock(
         cursor = ncursor
     end
     if linenumbernode isa LineNumberNode
-        exs = Meta.parseall(code; filename = linenumbernode.file).args
+        parseall_kwargs = _parse !== nothing ? (; filename = linenumbernode.file, _parse = _parse) : (; filename = linenumbernode.file)
+        exs = Meta.parseall(code; parseall_kwargs...).args
+        if isempty(results) && length(exs) == 1 && exs[1] isa LineNumberNode
+            # block was empty or consisted of just comments
+            empty!(exs)
+        end
         @assert length(exs) == 2 * length(results) "Issue at $linenumbernode:\n$code"
         for (i, ex) in enumerate(Iterators.partition(exs, 2))
             @assert ex[1] isa LineNumberNode
@@ -279,7 +326,7 @@ function object(qn::QuoteNode, str::AbstractString)
 end
 
 function Base.print(io::IO, obj::Object)
-    print(io, obj.binding)
+    print(io, bindingstring(obj.binding))
     print_signature(io, obj.signature)
     print_extra(io, obj.noncanonical_extra)
     return
@@ -623,12 +670,19 @@ function get_sandbox_module!(meta, prefix, name = nothing; share_default_module 
     # Either fetch and return an existing sandbox from the meta dictionary (based on the generated name),
     # or initialize a new clean one, which gets stored in meta for future re-use.
     return get!(meta, sym) do
-        # If the module does not exists already, we need to construct a new one.
-        m = Module(sym)
-        # eval(expr) is available in the REPL (i.e. Main) so we emulate that for the sandbox
-        Core.eval(m, :(eval(x) = Core.eval($m, x)))
-        # modules created with Module() does not have include defined
-        Core.eval(m, :(include(x) = Base.include($m, abspath(x))))
+        # If the module does not exist already, we need to construct a new one.
+        # We create a baremodule so that we can insert a custom `include` method
+        # that is closer to the one in Main, in that it works relative to the
+        # current working directory, not relative to the module.
+        m = Core.eval(
+            Main, :(
+                baremodule $sym
+                using Base
+                eval(x) = Core.eval($sym, x)
+                include(x) = Base.include($sym, abspath(x))
+                end
+            )
+        )
         return m
     end
 end

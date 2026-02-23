@@ -138,15 +138,15 @@ function footnotes(doc::Document)
         for (id, (ids, bodies)) in orphans
             # Multiple footnote bodies.
             if bodies > 1
-                @docerror(doc, :footnote, "footnote '$id' has $bodies bodies in $(locrepr(page.source)).")
+                @docerror(doc, :footnote, "footnote '$id' has $bodies bodies in $(locrepr(doc, page)).")
             end
             # No footnote references for an id.
             if ids === 0
-                @docerror(doc, :footnote, "unused footnote named '$id' in $(locrepr(page.source)).")
+                @docerror(doc, :footnote, "unused footnote named '$id' in $(locrepr(doc, page)).")
             end
             # No footnote bodies for an id.
             if bodies === 0
-                @docerror(doc, :footnote, "no footnotes found for '$id' in $(locrepr(page.source)).")
+                @docerror(doc, :footnote, "no footnotes found for '$id' in $(locrepr(doc, page)).")
             end
         end
     end
@@ -321,7 +321,7 @@ function _linkcheck_curl(method::Symbol, url::AbstractString; timeout::Real, use
         push!(headers, "-H")
         push!(headers, "Authorization: Bearer $(ENV["GITHUB_TOKEN"])")
     end
-    return `curl $(method === :HEAD ? "-sI" : "-s") --proto =http,https,ftp,ftps $(headers) $(url) --max-time $timeout -o $null_file --write-out "%{http_code} %{url_effective} %{redirect_url}"`
+    return `curl $(method === :HEAD ? "-sI" : "-s") --proto =http,https,ftp,ftps -g $(headers) $(url) --max-time $timeout -o $null_file --write-out "%{http_code} %{url_effective} %{redirect_url}"`
 end
 
 # Automatic Pkg.add() GitHub remote check
